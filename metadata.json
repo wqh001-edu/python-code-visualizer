@@ -1,0 +1,5 @@
+{
+  "name": "PyVisualizer - Interactive Python Tutor",
+  "description": "A high-performance Python code visualization platform that allows users to step through code execution, monitor memory state, and visualize object references in real-time using Pyodide and D3.js.",
+  "requestFramePermissions": []
+}
