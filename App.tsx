@@ -3,21 +3,17 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import CodeEditor from './components/Editor';
 import Visualizer from './components/Visualizer';
 import Terminal from './components/Terminal';
+import HistorySidebar, { HistoryItem } from './components/HistorySidebar';
 import { ExecutionTrace, TraceFrame } from './types';
 import { TRACER_WRAPPER_PYTHON } from './services/pythonTracer';
 
 // Initial Python code
-const INITIAL_CODE = `def fib(n):
-    if n <= 1:
-        return n
-    return fib(n-1) + fib(n-2)
+const INITIAL_CODE = `name = input("Enter your name: ")
+age = input("Enter your age: ")
+print(f"Hello {name}, you are {age} years old!")
 
-my_list = [10, 20, 30]
-my_dict = {"a": 1, "b": my_list}
-result = fib(3)
-
-print(f"Fib result: {result}")
-print(f"List: {my_list}")
+my_list = [name, int(age)]
+print(f"List check: {my_list}")
 `;
 
 const App: React.FC = () => {
@@ -28,6 +24,31 @@ const App: React.FC = () => {
   const [stepIndex, setStepIndex] = useState(-1);
   const [isExecuting, setIsExecuting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  
+  // Interactive Input state
+  const [inputBuffer, setInputBuffer] = useState<string[]>([]);
+  const [isInputRequired, setIsInputRequired] = useState(false);
+
+  // History state
+  const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+
+  // Load history on mount
+  useEffect(() => {
+    const saved = localStorage.getItem('pyvisualizer_history');
+    if (saved) {
+      try {
+        setHistory(JSON.parse(saved));
+      } catch (e) {
+        console.error("Failed to parse history");
+      }
+    }
+  }, []);
+
+  // Save history whenever it changes
+  useEffect(() => {
+    localStorage.setItem('pyvisualizer_history', JSON.stringify(history));
+  }, [history]);
 
   // Initialize Pyodide on mount
   useEffect(() => {
@@ -50,30 +71,78 @@ const App: React.FC = () => {
     initPyodide();
   }, []);
 
-  const handleRun = useCallback(async () => {
+  const handleRun = useCallback(async (currentInputBuffer: string[] = inputBuffer) => {
     if (!pyodide) return;
     setIsExecuting(true);
     setError(null);
-    setStepIndex(-1);
+    setIsInputRequired(false);
 
     try {
       await pyodide.runPythonAsync(TRACER_WRAPPER_PYTHON);
       
       const escapedCode = code.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
-      const traceResultJson = await pyodide.runPythonAsync(`run_with_trace('''${escapedCode}''')`);
+      const inputJson = JSON.stringify(currentInputBuffer);
+      const traceResultJson = await pyodide.runPythonAsync(`run_with_trace('''${escapedCode}''', '${inputJson}')`);
       
-      const parsedTrace: ExecutionTrace = JSON.parse(traceResultJson);
-      setTrace(parsedTrace);
-      if (parsedTrace.steps.length > 0) {
+      const parsed = JSON.parse(traceResultJson);
+      
+      if (parsed.status === 'input_required') {
+        // We found an input() call but the buffer is empty
+        setIsInputRequired(true);
+        // Show what was generated so far
+        setTrace({ steps: parsed.steps });
+        setStepIndex(parsed.steps.length - 1);
+      } else if (parsed.status === 'error') {
+        setError(parsed.error);
+        addToHistory(code, 'error');
+      } else {
+        // Success
+        setTrace({ steps: parsed.steps });
         setStepIndex(0);
+        addToHistory(code, 'success');
       }
     } catch (err: any) {
       console.error("Execution Error:", err);
       setError(err?.message || String(err) || "An error occurred during execution.");
+      addToHistory(code, 'error');
     } finally {
       setIsExecuting(false);
     }
-  }, [pyodide, code]);
+  }, [pyodide, code, inputBuffer]);
+
+  const addToHistory = (codeContent: string, status: 'success' | 'error') => {
+    const newItem: HistoryItem = {
+      id: Math.random().toString(36).substr(2, 9),
+      code: codeContent,
+      timestamp: Date.now(),
+      status
+    };
+    // Keep only last 50 items
+    setHistory(prev => [newItem, ...prev].slice(0, 50));
+  };
+
+  const handleInputSubmit = (val: string) => {
+    const newBuffer = [...inputBuffer, val];
+    setInputBuffer(newBuffer);
+    // Automatically re-run with the expanded buffer
+    handleRun(newBuffer);
+  };
+
+  const deleteHistoryItem = (id: string) => {
+    setHistory(prev => prev.filter(item => item.id !== id));
+  };
+
+  const clearHistory = () => {
+    if (confirm("Are you sure you want to clear all history?")) {
+      setHistory([]);
+    }
+  };
+
+  const selectHistoryItem = (item: HistoryItem) => {
+    setCode(item.code);
+    setIsHistoryOpen(false);
+    reset();
+  };
 
   const stepForward = () => {
     if (trace && stepIndex < trace.steps.length - 1) {
@@ -91,6 +160,8 @@ const App: React.FC = () => {
     setTrace(null);
     setStepIndex(-1);
     setError(null);
+    setInputBuffer([]);
+    setIsInputRequired(false);
   };
 
   const currentStep: TraceFrame | null = (trace && stepIndex >= 0) ? trace.steps[stepIndex] : null;
@@ -101,19 +172,32 @@ const App: React.FC = () => {
       <header className="h-14 border-b border-slate-800 flex items-center justify-between px-6 bg-slate-900/50 backdrop-blur-md z-10">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center font-bold text-white shadow-lg shadow-blue-500/20">Py</div>
-          <h1 className="text-xl font-semibold tracking-tight">PyVisualizer <span className="text-[10px] bg-slate-800 px-2 py-0.5 rounded-full text-slate-400 ml-2 border border-slate-700">PYTHON TUTOR MODE</span></h1>
+          <h1 className="text-xl font-semibold tracking-tight">PyVisualizer <span className="text-[10px] bg-slate-800 px-2 py-0.5 rounded-full text-slate-400 ml-2 border border-slate-700">INTERACTIVE</span></h1>
         </div>
         
         <div className="flex items-center gap-2">
           {isLoading ? (
             <div className="flex items-center gap-2 text-slate-400 text-sm animate-pulse">
                <div className="w-4 h-4 border-2 border-slate-400 border-t-transparent rounded-full animate-spin"></div>
-               Initializing WASM Runtime...
+               Initializing WASM...
             </div>
           ) : (
             <>
               <button 
-                onClick={handleRun}
+                onClick={() => setIsHistoryOpen(true)}
+                className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-md transition-colors relative"
+                title="View History"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                {history.length > 0 && (
+                  <span className="absolute top-1 right-1 w-2 h-2 bg-blue-500 rounded-full"></span>
+                )}
+              </button>
+
+              <button 
+                onClick={() => handleRun()}
                 disabled={isExecuting}
                 className="px-6 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 rounded-md font-bold text-sm transition-all shadow-lg shadow-blue-600/20 flex items-center gap-2 active:scale-95"
               >
@@ -131,6 +215,16 @@ const App: React.FC = () => {
           )}
         </div>
       </header>
+
+      {/* History Sidebar */}
+      <HistorySidebar 
+        isOpen={isHistoryOpen}
+        onClose={() => setIsHistoryOpen(false)}
+        history={history}
+        onSelect={selectHistoryItem}
+        onDelete={deleteHistoryItem}
+        onClear={clearHistory}
+      />
 
       {/* Main Content Area */}
       <main className="flex-1 flex overflow-hidden p-4 gap-4">
@@ -180,7 +274,7 @@ const App: React.FC = () => {
                   </button>
                 </div>
                 <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
-                  Progress: {Math.round(((stepIndex + 1) / (trace?.steps.length || 1)) * 100)}%
+                  Step {stepIndex + 1} of {trace?.steps.length || 0}
                 </div>
              </div>
              
@@ -193,9 +287,6 @@ const App: React.FC = () => {
                  onChange={(e) => setStepIndex(parseInt(e.target.value))}
                  className="flex-1 h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-blue-500"
                />
-               <div className="text-xs font-mono text-blue-400 min-w-[80px] text-right">
-                 {stepIndex + 1} / {trace?.steps.length || 0}
-               </div>
              </div>
           </div>
         </div>
@@ -214,14 +305,18 @@ const App: React.FC = () => {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
                   </div>
-                  <p className="text-sm font-medium tracking-wide">Write some code and click <span className="text-blue-500">Run</span> to begin</p>
+                  <p className="text-sm font-medium tracking-wide">Write some code and click <span className="text-blue-500">Run</span></p>
                </div>
              )}
           </div>
 
           {/* Bottom Section: Output Terminal */}
-          <div className="h-40 shrink-0">
-            <Terminal output={currentStep?.stdout || ''} />
+          <div className="h-48 shrink-0">
+            <Terminal 
+              output={currentStep?.stdout || ''} 
+              isInputRequired={isInputRequired}
+              onInputSubmit={handleInputSubmit}
+            />
           </div>
         </div>
       </main>
@@ -231,14 +326,13 @@ const App: React.FC = () => {
         <div className="flex items-center gap-6">
            <div className="flex items-center gap-2">
              <div className={`w-2 h-2 rounded-full ${isLoading ? 'bg-yellow-500' : 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]'}`}></div>
-             <span>{isLoading ? 'Booting Engine...' : 'Engine Ready'}</span>
+             <span>{isLoading ? 'Booting...' : 'Ready'}</span>
            </div>
-           <span>Mode: Memory Tracking</span>
-           <span>Stack Depth: {currentStep?.stack.length || 0}</span>
+           <span>History: {history.length} items</span>
         </div>
         <div className="flex items-center gap-4">
            {error && <span className="bg-red-500/20 text-red-400 px-2 py-0.5 rounded border border-red-500/30">Error: {error}</span>}
-           <span className="text-slate-600">v1.2.0-stable</span>
+           <span className="text-slate-600">Pyodide WASM v0.26.1</span>
         </div>
       </footer>
     </div>

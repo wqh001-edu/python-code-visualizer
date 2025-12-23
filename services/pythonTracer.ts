@@ -1,7 +1,6 @@
 
 /**
- * Advanced Python Tracer for PythonTutor-style visualization.
- * It recursively builds a heap of non-primitive objects.
+ * Advanced Python Tracer with Interactive Input support.
  */
 export const TRACER_WRAPPER_PYTHON = `
 import sys
@@ -9,13 +8,16 @@ import json
 import io
 import traceback
 import types
+import builtins
 
 class TraceLogger:
-    def __init__(self):
+    def __init__(self, input_buffer=None):
         self.trace_data = []
         self.stdout_capture = io.StringIO()
         self.max_steps = 300
         self.heap = {}
+        self.input_buffer = input_buffer or []
+        self.input_index = 0
         
     def is_primitive(self, val):
         return isinstance(val, (int, float, str, bool, type(None)))
@@ -27,12 +29,10 @@ class TraceLogger:
             
         t_name = type(val).__name__
         
-        # Avoid recursion or massive objects
         if len(self.heap) > 100:
             return obj_id
 
         if isinstance(val, (list, tuple)):
-            # Store list as indices or refIds
             elements = []
             self.heap[obj_id] = {"id": obj_id, "type": t_name, "value": elements}
             for item in val:
@@ -52,10 +52,22 @@ class TraceLogger:
                     ref = self.get_object_info(v)
                     items[k_str] = {"isRef": True, "val": ref}
         else:
-            # Fallback for other objects
             self.heap[obj_id] = {"id": obj_id, "type": t_name, "value": str(val)}
             
         return obj_id
+
+    def custom_input(self, prompt=""):
+        if prompt:
+            print(prompt, end="")
+        if self.input_index < len(self.input_buffer):
+            val = self.input_buffer[self.input_index]
+            self.input_index += 1
+            # print is used to echo the input to stdout like a real terminal
+            print(val) 
+            return val
+        else:
+            # Signal that more input is needed
+            raise EOFError("INTERACTIVE_INPUT_REQUIRED")
 
     def capture_frame(self, frame, event, arg):
         if frame.f_code.co_filename != '<string>':
@@ -63,8 +75,6 @@ class TraceLogger:
         if len(self.trace_data) >= self.max_steps:
             return
 
-        # Clear heap per step to avoid cross-step contamination 
-        # (Simplified approach: capture full state per step)
         self.heap = {}
 
         def process_variables(var_dict):
@@ -90,7 +100,6 @@ class TraceLogger:
                     }
             return processed
 
-        # Build stack trace
         stack = []
         curr = frame
         while curr and curr.f_code.co_filename == '<string>':
@@ -117,21 +126,39 @@ class TraceLogger:
         self.capture_frame(frame, event, arg)
         return self.trace_dispatch
 
-def run_with_trace(code):
-    logger = TraceLogger()
+def run_with_trace(code, input_json="[]"):
+    input_buffer = json.loads(input_json)
+    logger = TraceLogger(input_buffer=input_buffer)
     original_stdout = sys.stdout
+    original_input = builtins.input
     sys.stdout = logger.stdout_capture
+    builtins.input = logger.custom_input
+    
+    status = "success"
+    error_msg = None
     
     try:
         exec_globals = {}
         sys.settrace(logger.trace_dispatch)
         exec(code, exec_globals)
+    except EOFError as e:
+        if str(e) == "INTERACTIVE_INPUT_REQUIRED":
+            status = "input_required"
+        else:
+            status = "error"
+            error_msg = str(e)
     except Exception as e:
-        # Final capture on failure
-        pass
+        status = "error"
+        error_msg = str(e)
     finally:
         sys.settrace(None)
         sys.stdout = original_stdout
+        builtins.input = original_input
         
-    return json.dumps({"steps": logger.trace_data})
+    return json.dumps({
+        "steps": logger.trace_data, 
+        "status": status,
+        "error": error_msg,
+        "inputIndex": logger.input_index
+    })
 `;
