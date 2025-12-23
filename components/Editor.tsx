@@ -6,15 +6,17 @@ interface CodeEditorProps {
   code: string;
   onChange: (value: string | undefined) => void;
   currentLine?: number;
+  loopRange?: { start: number; end: number } | null;
 }
 
-const CodeEditor: React.FC<CodeEditorProps> = ({ code, onChange, currentLine }) => {
+const CodeEditor: React.FC<CodeEditorProps> = ({ code, onChange, currentLine, loopRange }) => {
   const editorRef = React.useRef<any>(null);
+  const monacoRef = React.useRef<any>(null);
 
   const handleEditorDidMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
+    monacoRef.current = monaco;
     
-    // Customizing theme colors for a darker look
     monaco.editor.defineTheme('pyviz-dark', {
       base: 'vs-dark',
       inherit: true,
@@ -27,22 +29,38 @@ const CodeEditor: React.FC<CodeEditorProps> = ({ code, onChange, currentLine }) 
   };
 
   React.useEffect(() => {
-    if (editorRef.current && currentLine) {
+    if (editorRef.current && monacoRef.current) {
       const editor = editorRef.current;
-      // We could add decorations for the current line
-      const decorations = editor.deltaDecorations([], [
-        {
-          range: new (window as any).monaco.Range(currentLine, 1, currentLine, 1),
+      const monaco = monacoRef.current;
+      const newDecorations = [];
+
+      // Current line highlight
+      if (currentLine) {
+        newDecorations.push({
+          range: new monaco.Range(currentLine, 1, currentLine, 1),
           options: {
             isWholeLine: true,
             className: 'bg-blue-900/40',
-            glyphMarginClassName: 'bg-blue-500 rounded-full',
+            glyphMarginClassName: 'bg-blue-500 shadow-[0_0_10px_#3b82f6] rounded-full',
           }
-        }
-      ]);
+        });
+      }
+
+      // Loop body highlight
+      if (loopRange) {
+        newDecorations.push({
+          range: new monaco.Range(loopRange.start, 1, loopRange.end, 1),
+          options: {
+            isWholeLine: true,
+            className: 'bg-yellow-500/10 border-l-2 border-yellow-500/30',
+          }
+        });
+      }
+
+      const decorations = editor.deltaDecorations([], newDecorations);
       return () => editor.deltaDecorations(decorations, []);
     }
-  }, [currentLine]);
+  }, [currentLine, loopRange]);
 
   return (
     <div className="h-full w-full border-r border-slate-800">
@@ -60,6 +78,9 @@ const CodeEditor: React.FC<CodeEditorProps> = ({ code, onChange, currentLine }) 
           glyphMargin: true,
           folding: true,
           lineDecorationsWidth: 10,
+          renderLineHighlight: 'all',
+          cursorBlinking: 'smooth',
+          smoothScrolling: true,
         }}
       />
     </div>

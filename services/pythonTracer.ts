@@ -1,23 +1,24 @@
 
 /**
- * Advanced Python Tracer with Interactive Input support.
+ * Advanced Python Tracer with Loop Detection.
  */
 export const TRACER_WRAPPER_PYTHON = `
 import sys
 import json
 import io
 import traceback
-import types
 import builtins
 
 class TraceLogger:
     def __init__(self, input_buffer=None):
         self.trace_data = []
         self.stdout_capture = io.StringIO()
-        self.max_steps = 300
+        self.max_steps = 500
         self.heap = {}
         self.input_buffer = input_buffer or []
         self.input_index = 0
+        self.loop_stats = {} # (func_name, line) -> current_iteration
+        self.last_lines = {} # stack_depth -> last_line
         
     def is_primitive(self, val):
         return isinstance(val, (int, float, str, bool, type(None)))
@@ -26,9 +27,7 @@ class TraceLogger:
         obj_id = str(id(val))
         if obj_id in self.heap:
             return obj_id
-            
         t_name = type(val).__name__
-        
         if len(self.heap) > 100:
             return obj_id
 
@@ -53,20 +52,16 @@ class TraceLogger:
                     items[k_str] = {"isRef": True, "val": ref}
         else:
             self.heap[obj_id] = {"id": obj_id, "type": t_name, "value": str(val)}
-            
         return obj_id
 
     def custom_input(self, prompt=""):
-        if prompt:
-            print(prompt, end="")
+        if prompt: print(prompt, end="")
         if self.input_index < len(self.input_buffer):
             val = self.input_buffer[self.input_index]
             self.input_index += 1
-            # print is used to echo the input to stdout like a real terminal
             print(val) 
             return val
         else:
-            # Signal that more input is needed
             raise EOFError("INTERACTIVE_INPUT_REQUIRED")
 
     def capture_frame(self, frame, event, arg):
@@ -76,29 +71,62 @@ class TraceLogger:
             return
 
         self.heap = {}
+        depth = 0
+        curr_f = frame
+        while curr_f:
+            depth += 1
+            curr_f = curr_f.f_back
 
-        def process_variables(var_dict):
+        # Loop Detection Logic
+        line = frame.f_lineno
+        func = frame.f_code.co_name
+        loop_meta = None
+        
+        last_line = self.last_lines.get(depth, 0)
+        self.last_lines[depth] = line
+        
+        # If jumping back, it's a loop iteration
+        key = (func, line)
+        if line <= last_line and event == 'line':
+            self.loop_stats[key] = self.loop_stats.get(key, 0) + 1
+            loop_meta = {
+                "id": f"loop_{line}",
+                "iteration": self.loop_stats[key],
+                "isLoopHeader": True
+            }
+        elif key in self.loop_stats:
+            # Still in loop but not at header
+            loop_meta = {
+                "id": f"loop_{line}",
+                "iteration": self.loop_stats[key],
+                "isLoopHeader": False
+            }
+
+        def process_variables(var_dict, prev_vars=None):
             processed = {}
             for k, v in var_dict.items():
                 if k.startswith('__'): continue
                 t_name = type(v).__name__
-                if self.is_primitive(v):
-                    processed[k] = {
-                        "name": k,
-                        "value": str(v) if v is not None else "None",
-                        "type": t_name,
-                        "isReference": False
-                    }
-                else:
-                    ref_id = self.get_object_info(v)
-                    processed[k] = {
-                        "name": k,
-                        "value": t_name,
-                        "type": t_name,
-                        "isReference": True,
-                        "refId": ref_id
-                    }
+                is_ref = not self.is_primitive(v)
+                val_str = str(v) if not is_ref else t_name
+                
+                # Detect change for animation
+                has_changed = False
+                if prev_vars and k in prev_vars:
+                    has_changed = prev_vars[k]["value"] != val_str
+
+                processed[k] = {
+                    "name": k,
+                    "value": val_str,
+                    "type": t_name,
+                    "isReference": is_ref,
+                    "refId": self.get_object_info(v) if is_ref else None,
+                    "changed": has_changed
+                }
             return processed
+
+        prev_step = self.trace_data[-1] if self.trace_data else None
+        prev_locals = prev_step["locals"] if prev_step else None
 
         stack = []
         curr = frame
@@ -107,14 +135,15 @@ class TraceLogger:
             curr = curr.f_back
 
         step = {
-            "line": frame.f_lineno,
+            "line": line,
             "event": event,
-            "funcName": frame.f_code.co_name,
-            "locals": process_variables(frame.f_locals),
+            "funcName": func,
+            "locals": process_variables(frame.f_locals, prev_locals),
             "globals": process_variables(frame.f_globals),
             "heap": self.heap.copy(),
             "stack": stack[::-1],
-            "stdout": self.stdout_capture.getvalue()
+            "stdout": self.stdout_capture.getvalue(),
+            "loopMeta": loop_meta
         }
         
         if event == 'exception':

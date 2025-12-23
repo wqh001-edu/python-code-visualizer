@@ -5,12 +5,21 @@ export interface TraceVariable {
   type: string;
   isReference: boolean;
   refId?: string;
+  changed?: boolean; // For flash animation
 }
 
 export interface HeapObject {
   id: string;
   type: string;
-  value: any; // Can be a primitive, a list of refIds, or a dict of refIds
+  value: any;
+}
+
+export interface LoopMetadata {
+  id: string;
+  iteration: number;
+  bodyStart: number;
+  bodyEnd: number;
+  isLoopHeader: boolean;
 }
 
 export interface TraceFrame {
@@ -19,10 +28,11 @@ export interface TraceFrame {
   funcName: string;
   locals: Record<string, TraceVariable>;
   globals: Record<string, TraceVariable>;
-  heap: Record<string, HeapObject>; // Global heap state at this step
-  stack: string[]; // List of function names currently in the call stack
+  heap: Record<string, HeapObject>;
+  stack: string[];
   stdout: string;
   exception?: string;
+  loopMeta?: LoopMetadata;
 }
 
 export interface ExecutionTrace {
