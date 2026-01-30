@@ -3,21 +3,23 @@ import React, { useState, useEffect, useRef } from 'react';
 
 interface TerminalProps {
   output: string;
+  error?: string | null;
   isInputRequired: boolean;
   onInputSubmit: (val: string) => void;
 }
 
-const Terminal: React.FC<TerminalProps> = ({ output, isInputRequired, onInputSubmit }) => {
+const Terminal: React.FC<TerminalProps> = ({ output, error, isInputRequired, onInputSubmit }) => {
   const [inputValue, setInputValue] = useState('');
   const terminalEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Auto-scroll to bottom when output or error changes
   useEffect(() => {
     terminalEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     if (isInputRequired) {
       inputRef.current?.focus();
     }
-  }, [output, isInputRequired]);
+  }, [output, error, isInputRequired]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -39,9 +41,19 @@ const Terminal: React.FC<TerminalProps> = ({ output, isInputRequired, onInputSub
         )}
       </div>
       
-      <div className="flex-1 overflow-y-auto">
-        <pre className="whitespace-pre-wrap">{output || 'No output yet...'}</pre>
+      <div className="flex-1 overflow-y-auto font-mono">
+        {/* Standard Output */}
+        <pre className="whitespace-pre-wrap text-slate-300">{output}</pre>
         
+        {/* Error Output */}
+        {error && (
+          <div className="mt-2 p-2 bg-red-900/20 border-l-2 border-red-500 text-red-400 whitespace-pre-wrap animate-in fade-in slide-in-from-bottom-2">
+            <div className="font-bold text-xs uppercase mb-1 text-red-500">Traceback / Error:</div>
+            {error}
+          </div>
+        )}
+
+        {/* Input Field */}
         {isInputRequired && (
           <form onSubmit={handleSubmit} className="mt-2 flex items-center gap-2 animate-in fade-in slide-in-from-left-2">
             <span className="text-blue-400 font-bold">❯</span>

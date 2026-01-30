@@ -65,9 +65,13 @@ const App: React.FC = () => {
     setIsInputRequired(false);
 
     try {
+      // Ensure the tracer class is loaded
       await pyodide.runPythonAsync(TRACER_WRAPPER_PYTHON);
+      
       const escapedCode = code.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
       const inputJson = JSON.stringify(currentInputBuffer);
+      
+      // Run the tracer
       const result = await pyodide.runPythonAsync(`run_with_trace('''${escapedCode}''', '${inputJson}')`);
       const parsed = JSON.parse(result);
       
@@ -75,15 +79,30 @@ const App: React.FC = () => {
         setIsInputRequired(true);
         setTrace({ steps: parsed.steps });
         setStepIndex(parsed.steps.length - 1);
+        setError(null);
       } else if (parsed.status === 'error') {
+        // IMPORTANT: Even if there is an error, we might have partial execution steps
         setError(parsed.error);
+        
+        if (parsed.steps && parsed.steps.length > 0) {
+          setTrace({ steps: parsed.steps });
+          // Jump to the last step where the error occurred
+          setStepIndex(parsed.steps.length - 1);
+        } else {
+          // Syntax error or immediate failure
+          setTrace(null);
+          setStepIndex(-1);
+        }
         addToHistory(code, 'error');
       } else {
+        // Success
         setTrace({ steps: parsed.steps });
         setStepIndex(0);
+        setError(null);
         addToHistory(code, 'success');
       }
     } catch (err: any) {
+      console.error(err);
       setError(err?.message || "Execution error");
       addToHistory(code, 'error');
     } finally {
@@ -116,14 +135,13 @@ const App: React.FC = () => {
       stepForward();
       return;
     }
-    // Find next step with same loop ID and isLoopHeader: true
     const nextIterIdx = trace.steps.findIndex((s, i) => 
       i > stepIndex && 
       s.loopMeta?.id === current.loopMeta?.id && 
       s.loopMeta?.isLoopHeader
     );
     if (nextIterIdx !== -1) setStepIndex(nextIterIdx);
-    else setStepIndex(trace.steps.length - 1); // Go to end if no more iterations
+    else setStepIndex(trace.steps.length - 1);
   };
 
   const jumpToEnd = () => {
@@ -133,7 +151,6 @@ const App: React.FC = () => {
       setStepIndex(trace.steps.length - 1);
       return;
     }
-    // Find the last step that belongs to this specific loop instance
     let lastIdx = stepIndex;
     for (let i = stepIndex; i < trace.steps.length; i++) {
       if (trace.steps[i].loopMeta?.id === current.loopMeta?.id) lastIdx = i;
@@ -152,10 +169,8 @@ const App: React.FC = () => {
 
   const currentStep = (trace && stepIndex >= 0) ? trace.steps[stepIndex] : null;
 
-  // Compute loop range for editor highlighting
   const getLoopRange = () => {
     if (!currentStep?.loopMeta || !trace) return null;
-    // Heuristic: body starts at loop header line, ends at the highest line number seen in this loop
     const loopId = currentStep.loopMeta.id;
     const sameLoopSteps = trace.steps.filter(s => s.loopMeta?.id === loopId);
     const start = Math.min(...sameLoopSteps.map(s => s.line));
@@ -191,24 +206,8 @@ const App: React.FC = () => {
                   <button onClick={() => setStepIndex(0)} disabled={!trace || stepIndex <= 0} className="p-1.5 hover:bg-slate-800 rounded text-slate-400 disabled:opacity-10"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 19l-7-7 7-7m8 14l-7-7 7-7" /></svg></button>
                   <button onClick={stepBackward} disabled={!trace || stepIndex <= 0} className="px-3 py-1 bg-slate-800 hover:bg-slate-700 rounded-md text-[10px] font-black border border-slate-700 disabled:opacity-30">PREV</button>
                   <button onClick={stepForward} disabled={!trace || stepIndex >= (trace?.steps.length || 0) - 1} className="px-4 py-1 bg-blue-600 hover:bg-blue-500 rounded-md text-[10px] font-black disabled:opacity-30">STEP</button>
-                  
-                  {/* New Loop Controls */}
-                  <button 
-                    onClick={stepIteration} 
-                    disabled={!trace || !currentStep?.loopMeta || stepIndex >= (trace?.steps.length || 0) - 1} 
-                    className="px-3 py-1 bg-yellow-600/20 hover:bg-yellow-600/40 text-yellow-500 border border-yellow-500/30 rounded-md text-[10px] font-black disabled:opacity-10"
-                    title="Jump to next iteration"
-                  >
-                    NEXT ITER
-                  </button>
-                  <button 
-                    onClick={jumpToEnd} 
-                    disabled={!trace || stepIndex >= (trace?.steps.length || 0) - 1} 
-                    className="px-3 py-1 bg-purple-600/20 hover:bg-purple-600/40 text-purple-400 border border-purple-500/30 rounded-md text-[10px] font-black disabled:opacity-10"
-                    title="Jump to loop end"
-                  >
-                    JUMP OUT
-                  </button>
+                  <button onClick={stepIteration} disabled={!trace || !currentStep?.loopMeta || stepIndex >= (trace?.steps.length || 0) - 1} className="px-3 py-1 bg-yellow-600/20 hover:bg-yellow-600/40 text-yellow-500 border border-yellow-500/30 rounded-md text-[10px] font-black disabled:opacity-10" title="Jump to next iteration">NEXT ITER</button>
+                  <button onClick={jumpToEnd} disabled={!trace || stepIndex >= (trace?.steps.length || 0) - 1} className="px-3 py-1 bg-purple-600/20 hover:bg-purple-600/40 text-purple-400 border border-purple-500/30 rounded-md text-[10px] font-black disabled:opacity-10" title="Jump to loop end">JUMP OUT</button>
                 </div>
                 <div className="text-[10px] font-black text-slate-500 tracking-tighter">PROGRESS {stepIndex + 1}/{trace?.steps.length || 0}</div>
              </div>
@@ -221,11 +220,21 @@ const App: React.FC = () => {
              {currentStep ? <Visualizer frame={currentStep} fullTrace={trace?.steps} /> : (
                <div className="w-full h-full rounded-xl border-2 border-dashed border-slate-800 bg-slate-900/30 flex flex-col items-center justify-center text-slate-500 gap-4">
                   <p className="text-sm font-bold opacity-40">READY TO VISUALIZE</p>
+                  {error && (
+                    <div className="text-red-500 text-xs px-4 text-center max-w-md animate-pulse">
+                      Code execution failed. Check the Terminal for details.
+                    </div>
+                  )}
                </div>
              )}
           </div>
           <div className="h-40 shrink-0">
-            <Terminal output={currentStep?.stdout || ''} isInputRequired={isInputRequired} onInputSubmit={(v) => handleRun([...inputBuffer, v])} />
+            <Terminal 
+              output={currentStep?.stdout || ''} 
+              error={error}
+              isInputRequired={isInputRequired} 
+              onInputSubmit={(v) => handleRun([...inputBuffer, v])} 
+            />
           </div>
         </div>
       </main>

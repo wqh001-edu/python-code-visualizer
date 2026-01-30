@@ -175,10 +175,12 @@ def run_with_trace(code, input_json="[]"):
             status = "input_required"
         else:
             status = "error"
-            error_msg = str(e)
-    except Exception as e:
+            # Format unexpected EOF errors cleanly
+            error_msg = traceback.format_exc()
+    except Exception:
         status = "error"
-        error_msg = str(e)
+        # Capture the full stack trace including the line number
+        error_msg = traceback.format_exc()
     finally:
         sys.settrace(None)
         sys.stdout = original_stdout
